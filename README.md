@@ -1,58 +1,167 @@
 # Relit
 
-Relit is a local-first web UI for batch-processing images through a ComfyUI workflow. The goal is simple: drop in a folder of photos, run them through a relighting or shadow-removal workflow, and get polished results back without leaving your local machine.
+Local-first toolkit for batch-relighting photos through a local ComfyUI instance.
+Primary surface: a web app served by ComfyUI itself. Secondary: a headless CLI
+sharing the same core, for scripted/unattended runs.
 
-This repository is currently at the scaffold stage. The UI shell exists, but the workflow integration and batch-processing logic still need to be implemented.
+---
 
-## What’s in the repo now
+## Working agreement (read first, every session)
 
-- A static dark-themed layout in [index.html](index.html)
-- Styling built with plain CSS variables in [styles.css](styles.css)
-- Placeholder ES modules for the app entrypoint and future ComfyUI/workflow helpers
+This is a real personal project I intend to use and extend. Quality > speed.
 
-## What’s left to get this going
+1. **Plan before coding.** For anything larger than a single-file change,
+   produce a short plan (files touched, interfaces changed, tests added) and
+   pause. Use your plan mode. Push back if the request is wrong, ambiguous,
+   or under-specified — don't paper over it.
+2. **Explore before assuming.** Before adding a dependency, check what's
+   already installed. Before guessing the ComfyUI API shape, hit it from a
+   scratch script and capture the real response into `docs/comfyui-api.md`.
+3. **Keep decisions logged.** When you make a non-obvious choice
+   (architecture, library, workaround), append a dated entry to
+   `docs/decisions.md`: Decision / Rationale / Alternatives rejected.
+   One paragraph each.
+4. **Tests are not optional for `core`.** UI code can be lightly tested;
+   anything in `packages/core` ships with Vitest unit tests. Integration
+   tests that need a live ComfyUI are gated by an env flag.
+5. **No silent failures.** Every error path either surfaces to the user with
+   an actionable message or logs structured JSON with enough context to
+   debug. Mirror the Sentry discipline.
+6. **Ask, don't guess, on irreversible decisions.** Public API names, state
+   library, persistence format — surface options with tradeoffs, let me pick.
+   Internal naming, file layout, error wording — just decide.
 
-1. Implement the ComfyUI client in [comfy.js](comfy.js) for image upload, prompt submission, WebSocket progress updates, and output fetching.
-2. Add workflow patching in [workflow.js](workflow.js) so uploaded images are swapped into the selected `LoadImage` node.
-3. Build the batch runner in [app.js](app.js) to process files one at a time on the client while ComfyUI handles the server-side queue.
-4. Render real queue status, progress, and results in the UI.
-5. Add downloads, ZIP export, retry, abort, and toast/error handling.
-6. Persist the server URL, workflow choice, and output preference in `localStorage`.
+---
 
-## Planned behavior
+## What this is
 
-- Runs entirely as static files, with no build step.
-- Lives inside `ComfyUI/web/extensions/relit/` and is served by ComfyUI at `http://localhost:8188/extensions/relit/`.
-- Uses the local ComfyUI API and WebSocket endpoints only.
-- Generates a single `client_id` for the session and reuses it for the whole run.
+Folder of photos in → each photo passes through a configurable ComfyUI
+workflow (default: IC-Light relight + DetailTransfer to preserve subject) →
+folder of relit photos out. Subject must be preserved; only lighting changes.
 
-## Current UI layout
+ComfyUI runs locally at `http://localhost:8188`. The web app builds to a
+static bundle and is copied into `~/ComfyUI/web/extensions/relit/` so it's
+served same-origin by ComfyUI — no CORS, no second server, no auth.
 
-The scaffold is split into three panels:
+---
 
-- Settings: server URL, workflow upload, and output preference
-- Input images: drag-and-drop or file selection
-- Queue and results: live status and output grid, once implemented
+## Architecture (shape is fixed, internals are yours to design)
 
-## Development notes
+pnpm monorepo:
 
-- Plain HTML, CSS, and JavaScript only
-- ES modules only, no bundler
-- Single external dependency planned: JSZip, loaded lazily for bulk downloads
-- All async work should fail visibly in the UI instead of only logging to the console
+```
+packages/
+  core/        # TS lib. Environment-agnostic. No DOM. No Node-only deps.
+               # Owns: workflow patching, ComfyUI client, batch orchestration,
+               # output naming. The contract every consumer uses.
+  web/         # Vite app. Imports core. Static bundle.
+  cli/         # Node CLI (commander). Imports core. tsx for dev, tsup for build.
+workflows/     # ComfyUI API-format workflow JSON, version-controlled.
+docs/
+  decisions.md
+  comfyui-api.md
+```
 
-## Repository layout
+The split exists because the web app is one consumer, the CLI is another,
+and a future watch-folder daemon is a third. `core` is the contract.
 
-- [index.html](index.html) - App shell and semantic structure
-- [styles.css](styles.css) - Dark theme and responsive layout
-- [app.js](app.js) - DOM orchestration entrypoint
-- [comfy.js](comfy.js) - ComfyUI API client helpers
-- [workflow.js](workflow.js) - Workflow patching helpers
+### Core abstractions — define these first, then implement
 
-## License
+- **`WorkflowDefinition`** — a workflow JSON + metadata declaring which
+  nodes are input image / output image / user-tunable fields (seed, prompt,
+  light direction, denoise). IC-Light is the first; Qwen-Image-Edit is the
+  planned second. The abstraction must accommodate both without changes.
+- **`ComfyClient`** — typed client over `/upload/image`, `/prompt`,
+  `/history`, `/view`, `/ws`. Reconnecting WebSocket. Just the raw API,
+  typed — no leaky abstractions on top.
+- **`BatchRunner`** — orchestrates upload → patch workflow → submit → await →
+  download. Emits typed events (`queued`/`started`/`progress`/`completed`/`failed`)
+  per item. Consumers subscribe.
+- **`FileSystem`** interface — abstracts file I/O so the same `BatchRunner`
+  works against the File System Access API in the browser and `node:fs` in
+  the CLI.
+- **`OutputNamer`** — pure function: original filename + config → output
+  path. Configurable suffix, collision strategy (skip/overwrite/number).
 
-See [LICENSE](LICENSE) for licensing details.
+---
 
-## Status
+## Phased build — verify each phase before moving to the next
 
-Open source and in active development. The next milestone is wiring the ComfyUI API and making the batch flow real.
+### Phase 0 — scaffolding
+
+Monorepo, strict tsconfig (`strict`, `noUncheckedIndexedAccess`,
+`exactOptionalPropertyTypes`), ESLint, Prettier, Vitest, GitHub Actions CI
+(typecheck + test on push).
+**Done when:** `pnpm build`, `pnpm test`, `pnpm typecheck` all pass on a
+clean clone.
+
+### Phase 1 — ComfyClient + smoke test
+
+Typed client. Integration test (gated by `RELIT_LIVE=1`) that round-trips
+one tiny image through a trivial workflow against a real local ComfyUI.
+**Done when:** types reflect actual API responses captured in
+`docs/comfyui-api.md`; integration test passes locally.
+
+### Phase 2 — WorkflowDefinition + IC-Light
+
+Implement `WorkflowDefinition`. Add the IC-Light workflow JSON and its
+definition file. `BatchRunner` runs one image end-to-end.
+**Done when:** unit tests cover patching; integration test relights a
+real image and writes it to disk.
+
+### Phase 3 — CLI
+
+`relit run --in ./photos --out ./relit --workflow iclight` with progress
+bar, summary at end, non-zero exit on any failure (configurable).
+**Done when:** I can batch a folder from the terminal.
+
+### Phase 4 — Web app
+
+Folder picker (FSA API), workflow dropdown, run button, per-image rows
+with progress, before/after viewer. Same `BatchRunner` underneath. Build
+script copies `dist` to `~/ComfyUI/web/extensions/relit/`.
+**Done when:** the same job runs in the browser.
+
+### Phase 5 — Polish
+
+Workflow parameter editing in the UI (sliders for fields each
+`WorkflowDefinition` declares user-tunable). Last-used settings in
+localStorage. Failure summary export.
+
+### Phase 6 — Second workflow (the real test of the abstraction)
+
+Add Qwen-Image-Edit-2509 as a second `WorkflowDefinition`. If `core` had
+to change to support it, the abstraction was wrong — fix it before
+declaring this phase done.
+
+---
+
+## Conventions
+
+- TypeScript strict. No `any` without an `eslint-disable-next-line` and a
+  one-line justification.
+- Errors are typed. Pick `Result<T, E>` or discriminated unions in Phase 0
+  and stick to it.
+- Logging: `pino` in CLI; `console` with structured payloads in browser.
+  Every log carries a `correlationId` per batch.
+- Conventional commits.
+
+---
+
+## When to ask vs. when to act
+
+- **Act:** file structure, internal naming, test fixtures, error wording,
+  anything inside a single function.
+- **Ask:** adding a runtime dependency, changing a public API in `core`,
+  picking a state-management library, choosing a persistence format,
+  anything spanning packages.
+
+---
+
+## Out of scope (record, don't delete)
+
+- Cloud / multi-user / auth.
+- Editing the ComfyUI graph in-app — ComfyUI's own UI is the editor.
+- Non-Chromium browsers (FSA API requirement).
+- Generating workflows from natural language. Author in ComfyUI, export,
+  drop into `workflows/`.
