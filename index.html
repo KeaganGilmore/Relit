@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Relit</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="app-header">
+        <div>
+          <p class="eyebrow">Relit</p>
+          <h1>Batch relighting for local ComfyUI workflows</h1>
+          <p class="lede">
+            Drop in a workflow, select a folder of images, and let ComfyUI
+            process them one at a time.
+          </p>
+        </div>
+      </header>
+
+      <main class="workspace" aria-label="Relit workspace">
+        <section class="panel panel-settings" aria-labelledby="settings-title">
+          <div class="panel-heading">
+            <p class="panel-kicker">Step 1</p>
+            <h2 id="settings-title">Settings</h2>
+          </div>
+
+          <div class="field-group">
+            <label for="server-url">ComfyUI server URL</label>
+            <input id="server-url" type="url" value="http://localhost:8188" />
+          </div>
+
+          <div class="field-group">
+            <label for="workflow-file">Workflow template</label>
+            <input id="workflow-file" type="file" accept=".json" />
+          </div>
+
+          <div class="field-group">
+            <label for="output-folder">Output folder preference</label>
+            <input id="output-folder" type="text" placeholder="Ask where to save each time" />
+          </div>
+        </section>
+
+        <section class="panel panel-dropzone" aria-labelledby="dropzone-title">
+          <div class="panel-heading">
+            <p class="panel-kicker">Step 2</p>
+            <h2 id="dropzone-title">Input images</h2>
+          </div>
+
+          <div class="dropzone" role="button" tabindex="0" aria-label="Drop images here or choose files">
+            <p class="dropzone-title">Drop images here</p>
+            <p class="dropzone-copy">or pick a folder / multiple files from your device</p>
+            <button type="button" class="secondary-action">Choose files</button>
+          </div>
+        </section>
+
+        <section class="panel panel-results" aria-labelledby="results-title">
+          <div class="panel-heading">
+            <p class="panel-kicker">Step 3</p>
+            <h2 id="results-title">Queue and results</h2>
+          </div>
+
+          <div class="results-empty" aria-live="polite">
+            <p>No jobs yet.</p>
+            <p>Processed images will appear here as they complete.</p>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
