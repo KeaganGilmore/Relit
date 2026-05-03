@@ -1,7 +1,9 @@
 import { defineConfig } from 'vite';
 
-export default defineConfig({
-  base: './',
+// Production build is mounted at /relit/ inside ComfyUI (see scripts/comfy_init.py).
+// Dev server runs at /, so use the appropriate base per command.
+export default defineConfig(({ command }) => ({
+  base: command === 'build' ? '/relit/' : '/',
   build: {
     outDir: 'dist',
     sourcemap: true,
@@ -11,4 +13,4 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
   },
-});
+}));
