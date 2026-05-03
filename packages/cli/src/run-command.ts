@@ -26,6 +26,7 @@ export interface RunCommandOptions {
   readonly collision: CollisionStrategy;
   readonly param: readonly string[];
   readonly itemTimeout: number;
+  readonly concurrency: number;
   readonly failOnError: boolean;
   readonly logLevel: string;
   readonly noWs: boolean;
@@ -147,6 +148,7 @@ export const runCommand = async (options: RunCommandOptions): Promise<number> =>
     ...(options.extension !== undefined ? { outputExtension: options.extension } : {}),
     collision: options.collision,
     itemTimeoutMs: options.itemTimeout,
+    concurrency: options.concurrency,
     correlationId,
     signal: ctl.signal,
   });

@@ -11,11 +11,17 @@ import type { BatchEvent, BatchItem, BatchSummary, RunFailureReason } from './ev
 export interface BatchOptions {
   readonly definition: WorkflowDefinition;
   readonly params?: Params;
-  /** Input filenames to process. Order is preserved. */
+  /** Input filenames to process. Order is preserved for queue events. */
   readonly inputs: readonly string[];
   readonly outputSuffix?: string;
   readonly outputExtension?: string;
   readonly collision?: CollisionStrategy;
+  /**
+   * Maximum number of items in flight at once. Default 1 (sequential).
+   * ComfyUI queues prompts internally regardless, but raising this lets
+   * upload/download/wait phases overlap.
+   */
+  readonly concurrency?: number;
   /** Subfolder under ComfyUI's input dir to upload to. Defaults to a unique batch id. */
   readonly uploadSubfolder?: string;
   /** Per-item timeout for the prompt to complete on the server. Default 5 minutes. */
@@ -72,42 +78,105 @@ export class BatchRunner {
     const failures: { item: BatchItem; reason: RunFailureReason }[] = [];
     let succeeded = 0;
     let skipped = 0;
+    const concurrency = Math.max(1, Math.floor(options.concurrency ?? 1));
 
     this.emit({ type: 'batch_started', total, correlationId });
+
+    // ---- Phase 1: pre-plan output names sequentially.
+    // This guarantees concurrent items don't race on the same target name.
+    type Plan =
+      | { kind: 'run'; item: BatchItem; outputName: string }
+      | { kind: 'skip'; item: BatchItem }
+      | { kind: 'fail'; item: BatchItem; reason: RunFailureReason };
+
+    const plans: Plan[] = [];
+    const claimed = new Set<string>();
 
     for (let index = 0; index < options.inputs.length; index++) {
       const input = options.inputs[index]!;
       const item: BatchItem = { id: `${correlationId}/${index}`, input };
+      this.emit({ type: 'item_queued', item, index });
 
       if (options.signal?.aborted) {
-        this.emit({ type: 'item_failed', item, reason: { kind: 'aborted' } });
-        failures.push({ item, reason: { kind: 'aborted' } });
+        plans.push({ kind: 'fail', item, reason: { kind: 'aborted' } });
         continue;
       }
 
-      this.emit({ type: 'item_queued', item, index });
-      const result = await this.runOne(item, options, subfolder);
-      switch (result.outcome) {
+      const namePlan = await this.planName(input, options, claimed);
+      if (namePlan.outcome === 'failed') {
+        plans.push({ kind: 'fail', item, reason: namePlan.reason });
+      } else if (namePlan.outcome === 'skipped') {
+        plans.push({ kind: 'skip', item });
+      } else {
+        claimed.add(namePlan.name);
+        plans.push({ kind: 'run', item, outputName: namePlan.name });
+      }
+    }
+
+    // ---- Phase 2: fan out the actual processing with bounded concurrency.
+    type SettledOutcome =
+      | { kind: 'completed'; item: BatchItem; result: RunOneCompleted }
+      | { kind: 'skipped'; item: BatchItem }
+      | { kind: 'failed'; item: BatchItem; reason: RunFailureReason };
+
+    const finalize = (outcome: SettledOutcome): void => {
+      switch (outcome.kind) {
         case 'completed':
           succeeded += 1;
           this.emit({
             type: 'item_completed',
-            item,
-            outputName: result.outputName,
-            outputBytes: result.outputBytes,
-            source: result.source,
-            elapsedMs: result.elapsedMs,
+            item: outcome.item,
+            outputName: outcome.result.outputName,
+            outputBytes: outcome.result.outputBytes,
+            source: outcome.result.source,
+            elapsedMs: outcome.result.elapsedMs,
           });
           break;
         case 'skipped':
           skipped += 1;
-          this.emit({ type: 'item_skipped', item, reason: 'output_exists' });
+          this.emit({ type: 'item_skipped', item: outcome.item, reason: 'output_exists' });
           break;
         case 'failed':
-          failures.push({ item, reason: result.reason });
-          this.emit({ type: 'item_failed', item, reason: result.reason });
+          failures.push({ item: outcome.item, reason: outcome.reason });
+          this.emit({ type: 'item_failed', item: outcome.item, reason: outcome.reason });
           break;
       }
+    };
+
+    const inFlight = new Set<Promise<SettledOutcome>>();
+
+    const launch = (plan: Plan): Promise<SettledOutcome> | undefined => {
+      if (plan.kind === 'skip') {
+        return Promise.resolve({ kind: 'skipped', item: plan.item });
+      }
+      if (plan.kind === 'fail') {
+        return Promise.resolve({ kind: 'failed', item: plan.item, reason: plan.reason });
+      }
+      if (options.signal?.aborted) {
+        return Promise.resolve({ kind: 'failed', item: plan.item, reason: { kind: 'aborted' } });
+      }
+      return this.processItem(plan.item, plan.outputName, options, subfolder).then(
+        (r): SettledOutcome =>
+          r.outcome === 'completed'
+            ? { kind: 'completed', item: plan.item, result: r }
+            : { kind: 'failed', item: plan.item, reason: r.reason },
+      );
+    };
+
+    for (const plan of plans) {
+      while (inFlight.size >= concurrency) {
+        finalize(await Promise.race(inFlight));
+      }
+      const promise = launch(plan);
+      if (!promise) continue;
+      const tracked: Promise<SettledOutcome> = promise.finally(() => {
+        inFlight.delete(tracked);
+      }) as Promise<SettledOutcome>;
+      inFlight.add(tracked);
+    }
+
+    while (inFlight.size > 0) {
+      finalize(await Promise.race(inFlight));
     }
 
     const summary: BatchSummary = {
@@ -123,25 +192,20 @@ export class BatchRunner {
     return summary;
   }
 
-  private async runOne(
+  private async processItem(
     item: BatchItem,
+    outputName: string,
     options: BatchOptions,
     subfolder: string,
   ): Promise<RunOneResult> {
     const t0 = this.now();
     const collision = options.collision ?? 'number';
 
-    // 1. Plan output name. For 'skip' / 'number' we need to know what's already on disk.
-    //    For 'overwrite' the planning is trivial.
-    const namePlan = await this.planName(item.input, options);
-    if (namePlan.outcome === 'failed') return namePlan;
-    if (namePlan.outcome === 'skipped') return { outcome: 'skipped' };
-
-    // 2. Read source bytes.
+    // 1. Read source bytes.
     const bytesR = await this.fs.readInput(item.input);
     if (!bytesR.ok) return { outcome: 'failed', reason: { kind: 'fs', error: bytesR.error } };
 
-    // 3. Upload to ComfyUI input dir.
+    // 2. Upload to ComfyUI input dir.
     const upload = await this.comfy.uploadImage(
       { data: bytesR.value, filename: item.input, mime: mimeFor(item.input) },
       { type: 'input', subfolder, overwrite: true },
@@ -151,7 +215,7 @@ export class BatchRunner {
       ? `${upload.value.subfolder}/${upload.value.name}`
       : upload.value.name;
 
-    // 4. Patch workflow graph.
+    // 3. Patch workflow graph.
     const graph = patch(options.definition, {
       inputImage: uploadedName,
       outputPrefix: `relit/${item.id}`,
@@ -159,7 +223,7 @@ export class BatchRunner {
     });
     if (!graph.ok) return { outcome: 'failed', reason: { kind: 'patch', error: graph.error } };
 
-    // 5. Submit prompt.
+    // 4. Submit prompt.
     const submitted = await this.comfy.submitPrompt(graph.value);
     if (!submitted.ok) {
       return { outcome: 'failed', reason: { kind: 'comfy', error: submitted.error } };
@@ -167,25 +231,25 @@ export class BatchRunner {
     const promptId = submitted.value.prompt_id;
     this.emit({ type: 'item_started', item, promptId });
 
-    // 6. Wait for completion.
+    // 5. Wait for completion.
     const wait = await this.waitForCompletion(item, promptId, options);
     if (wait.outcome !== 'ok') return { outcome: 'failed', reason: wait.reason };
 
-    // 7. Pick output, download, write.
+    // 6. Pick output, download, write.
     const source = pickFirstImage(wait.entry);
     if (!source) return { outcome: 'failed', reason: { kind: 'no_output' } };
 
     const dl = await this.comfy.downloadImage(source);
     if (!dl.ok) return { outcome: 'failed', reason: { kind: 'comfy', error: dl.error } };
 
-    const w = await this.fs.writeOutput(namePlan.name, dl.value, {
+    const w = await this.fs.writeOutput(outputName, dl.value, {
       overwrite: collision === 'overwrite',
     });
     if (!w.ok) return { outcome: 'failed', reason: { kind: 'fs', error: w.error } };
 
     return {
       outcome: 'completed',
-      outputName: namePlan.name,
+      outputName,
       outputBytes: dl.value.byteLength,
       source,
       elapsedMs: this.now() - t0,
@@ -195,6 +259,7 @@ export class BatchRunner {
   private async planName(
     input: string,
     options: BatchOptions,
+    claimed: ReadonlySet<string>,
   ): Promise<
     | { outcome: 'ok'; name: string }
     | { outcome: 'skipped' }
@@ -202,18 +267,6 @@ export class BatchRunner {
   > {
     const collision = options.collision ?? 'number';
 
-    // Probe up to 1000 candidate names; planOutputName drives which name to try next.
-    const checked = new Set<string>();
-    const exists = async (name: string): Promise<boolean | RunFailureReason> => {
-      if (checked.has(name)) return true; // already taken in this plan
-      const r = await this.fs.outputExists(name);
-      if (!r.ok) return { kind: 'fs', error: r.error };
-      if (r.value) checked.add(name);
-      return r.value;
-    };
-
-    // First pass: synchronous planOutputName with a memoised "exists" lookup.
-    // We materialise the existence map for a few candidates ahead of time.
     const candidates: string[] = [];
     candidates.push(applyAll(input, options.outputSuffix, options.outputExtension));
     if (collision === 'number') {
@@ -223,11 +276,16 @@ export class BatchRunner {
     }
     const existence: Record<string, boolean> = {};
     for (const c of candidates) {
-      const r = await exists(c);
-      if (typeof r !== 'boolean') return { outcome: 'failed', reason: r };
-      existence[c] = r;
+      // A name claimed by an earlier item this batch counts as "exists" for planning.
+      if (claimed.has(c)) {
+        existence[c] = true;
+        continue;
+      }
+      const r = await this.fs.outputExists(c);
+      if (!r.ok) return { outcome: 'failed', reason: { kind: 'fs', error: r.error } };
+      existence[c] = r.value;
       if (collision !== 'number' && c === candidates[0]) break;
-      if (collision === 'number' && !r) break;
+      if (collision === 'number' && !r.value) break;
     }
 
     const decision = planOutputName(
@@ -312,15 +370,16 @@ export class BatchRunner {
   }
 }
 
+type RunOneCompleted = {
+  outcome: 'completed';
+  outputName: string;
+  outputBytes: number;
+  source: ImageRef;
+  elapsedMs: number;
+};
+
 type RunOneResult =
-  | {
-      outcome: 'completed';
-      outputName: string;
-      outputBytes: number;
-      source: ImageRef;
-      elapsedMs: number;
-    }
-  | { outcome: 'skipped' }
+  | RunOneCompleted
   | { outcome: 'failed'; reason: RunFailureReason };
 
 const defaultSleep = (ms: number): Promise<void> =>

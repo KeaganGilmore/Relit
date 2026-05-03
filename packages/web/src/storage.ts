@@ -1,10 +1,11 @@
-const STORAGE_KEY = 'relit:settings:v1';
+const STORAGE_KEY = 'relit:settings:v2';
 
 export interface PersistedSettings {
   readonly comfyUrl?: string;
   readonly workflowId?: string;
   readonly suffix?: string;
   readonly collision?: 'skip' | 'overwrite' | 'number';
+  readonly concurrency?: number;
   readonly params?: Record<string, Record<string, string | number | boolean>>;
 }
 

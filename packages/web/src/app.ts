@@ -9,6 +9,7 @@ import {
   type BatchSummary,
   type CollisionStrategy,
   type Params,
+  type ParamValue,
 } from '@relit/core';
 import { createFsaFs } from './fs-fsa.js';
 import { paramForm } from './ui/param-form.js';
@@ -40,6 +41,7 @@ export const start = (): void => {
     comfyUrl: settings.comfyUrl ?? DEFAULT_COMFY_URL,
     suffix: settings.suffix ?? '_relit',
     collision: (settings.collision ?? 'number') as CollisionStrategy,
+    concurrency: settings.concurrency ?? 1,
     running: false,
     abort: undefined as AbortController | undefined,
     lastSummary: undefined as BatchSummary | undefined,
@@ -79,6 +81,21 @@ export const start = (): void => {
   collisionSelect.addEventListener('change', () => {
     state.collision = collisionSelect.value as CollisionStrategy;
     persist();
+  });
+
+  const concurrencyInput = h('input', {
+    type: 'number',
+    min: 1,
+    max: 16,
+    step: 1,
+  }) as HTMLInputElement;
+  concurrencyInput.value = String(state.concurrency);
+  concurrencyInput.addEventListener('input', () => {
+    const n = Number.parseInt(concurrencyInput.value, 10);
+    if (!Number.isNaN(n) && n >= 1) {
+      state.concurrency = n;
+      persist();
+    }
   });
 
   const inputDirBtn = h(
@@ -137,6 +154,8 @@ export const start = (): void => {
     suffixInput,
     h('label', { style: 'margin-top:8px' }, 'On collision'),
     collisionSelect,
+    h('label', { style: 'margin-top:8px' }, 'Concurrency (parallel items)'),
+    concurrencyInput,
     h('h2', {}, 'Parameters'),
     paramHost,
     h('div', { class: 'row', style: 'margin-top:16px;gap:8px' }, runBtn, cancelBtn),
@@ -216,7 +235,14 @@ export const start = (): void => {
     const stored2 = settings.params?.[state.workflow.id];
     const defaults = defaultParams(state.workflow);
     if (!stored2) return defaults;
-    return { ...defaults, ...(stored2 as Params) };
+    // Drop params that aren't declared by the current definition — happens
+    // when the workflow's param surface changes between releases.
+    const validKeys = new Set(Object.keys(state.workflow.params));
+    const filtered: Record<string, ParamValue> = {};
+    for (const [k, v] of Object.entries(stored2)) {
+      if (validKeys.has(k)) filtered[k] = v as ParamValue;
+    }
+    return { ...defaults, ...filtered };
   }
 
   function persist(): void {
@@ -226,6 +252,7 @@ export const start = (): void => {
       workflowId: state.workflow.id,
       suffix: state.suffix,
       collision: state.collision,
+      concurrency: state.concurrency,
       params: all as Record<string, Record<string, string | number | boolean>>,
     });
   }
@@ -297,6 +324,7 @@ export const start = (): void => {
       inputs: list.value.map((x) => x.name),
       outputSuffix: state.suffix,
       collision: state.collision,
+      concurrency: state.concurrency,
       ...(state.abort ? { signal: state.abort.signal } : {}),
     });
 

@@ -34,6 +34,7 @@ program
     (v) => Number.parseInt(v, 10),
     5 * 60 * 1000,
   )
+  .option('-c, --concurrency <n>', 'max items in flight at once', (v) => Number.parseInt(v, 10), 1)
   .option('--fail-on-error', 'exit non-zero if any image fails', false)
   .option('--log-level <level>', 'pino log level', 'info')
   .option('--no-ws', 'disable WebSocket progress (poll history only)', false)
@@ -48,6 +49,7 @@ program
       collision: raw['collision'] as RunCommandOptions['collision'],
       param: (raw['param'] as string[]) ?? [],
       itemTimeout: raw['itemTimeout'] as number,
+      concurrency: raw['concurrency'] as number,
       failOnError: raw['failOnError'] as boolean,
       logLevel: raw['logLevel'] as string,
       noWs: raw['ws'] === false,
