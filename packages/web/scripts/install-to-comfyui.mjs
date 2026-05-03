@@ -4,9 +4,11 @@
 
 import { existsSync, mkdirSync, rmSync, cpSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const distDir = resolve(new URL('..', import.meta.url).pathname, 'dist');
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+const distDir = resolve(scriptDir, '..', 'dist');
 if (!existsSync(distDir)) {
   process.stderr.write(`Build first: pnpm --filter @relit/web build\n  (no dist at ${distDir})\n`);
   process.exit(1);
