@@ -3,26 +3,24 @@ import type { WorkflowDefinition } from '../workflow/definition.js';
 /**
  * IC-Light relight + DetailTransfer to preserve the subject.
  *
- * **Required custom nodes** (install via ComfyUI Manager):
+ * **Required custom nodes** (install via ComfyUI Manager or git clone):
  * - `kijai/ComfyUI-IC-Light` — provides `LoadAndApplyICLightUnet` and
  *   `ICLightConditioning`.
- * - `Jonseed/ComfyUI-Detail-Daemon` (or any pack providing `DetailTransfer`).
+ * - `Jonseed/ComfyUI-Detail-Daemon` — provides `DetailTransfer`.
  *
  * **Required model files**:
  * - `iclight_sd15_fc.safetensors` in `models/unet/`.
- * - An SD1.5 base checkpoint (default: realisticVisionV60B1_v51HyperVAE) —
- *   override via the `checkpoint` param.
+ * - An SD1.5 base checkpoint in `models/checkpoints/`.
  *
- * If those aren't present, ComfyUI will return a `validation` error from
- * `submitPrompt` listing the missing nodes/files — surface that to the user.
+ * Output size matches the input image (IC-Light derives the latent size
+ * from the encoded foreground).
  */
 export const iclightWorkflow: WorkflowDefinition = {
   id: 'iclight',
   displayName: 'IC-Light relight (SD1.5)',
   description:
-    'Relights the input via IC-Light unet + a SD1.5 base, then DetailTransfer ' +
-    'preserves the original subject. Requires kijai/ComfyUI-IC-Light + a ' +
-    'DetailTransfer-providing custom node pack.',
+    'Relights the input via IC-Light unet + an SD1.5 base, then DetailTransfer ' +
+    'preserves the original subject.',
   graph: {
     '1': {
       class_type: 'LoadImage',
@@ -31,7 +29,7 @@ export const iclightWorkflow: WorkflowDefinition = {
     },
     '2': {
       class_type: 'CheckpointLoaderSimple',
-      inputs: { ckpt_name: 'realisticVisionV60B1_v51HyperVAE.safetensors' },
+      inputs: { ckpt_name: 'v1-5-pruned-emaonly-fp16.safetensors' },
       _meta: { title: 'Base SD1.5 checkpoint' },
     },
     '3': {
@@ -40,19 +38,20 @@ export const iclightWorkflow: WorkflowDefinition = {
       _meta: { title: 'Apply IC-Light unet' },
     },
     '4': {
+      class_type: 'VAEEncode',
+      inputs: { pixels: ['1', 0], vae: ['2', 2] },
+      _meta: { title: 'Encode foreground' },
+    },
+    '5': {
       class_type: 'ICLightConditioning',
       inputs: {
         positive: ['6', 0],
         negative: ['7', 0],
         vae: ['2', 2],
-        foreground: ['1', 0],
+        foreground: ['4', 0],
         multiplier: 0.182,
       },
       _meta: { title: 'IC-Light conditioning' },
-    },
-    '5': {
-      class_type: 'EmptyLatentImage',
-      inputs: { width: 768, height: 768, batch_size: 1 },
     },
     '6': {
       class_type: 'CLIPTextEncode',
@@ -68,9 +67,9 @@ export const iclightWorkflow: WorkflowDefinition = {
       class_type: 'KSampler',
       inputs: {
         model: ['3', 0],
-        positive: ['4', 0],
-        negative: ['4', 1],
-        latent_image: ['4', 2],
+        positive: ['5', 0],
+        negative: ['5', 1],
+        latent_image: ['5', 2],
         seed: 0,
         steps: 25,
         cfg: 2.0,
@@ -150,7 +149,7 @@ export const iclightWorkflow: WorkflowDefinition = {
       max: 0.5,
       step: 0.01,
       label: 'IC-Light multiplier',
-      target: { node: '4', input: 'multiplier' },
+      target: { node: '5', input: 'multiplier' },
     },
     detailBlend: {
       kind: 'number',
@@ -161,27 +160,9 @@ export const iclightWorkflow: WorkflowDefinition = {
       label: 'Detail blend',
       target: { node: '10', input: 'blend_factor' },
     },
-    width: {
-      kind: 'integer',
-      default: 768,
-      min: 256,
-      max: 2048,
-      step: 64,
-      label: 'Width',
-      target: { node: '5', input: 'width' },
-    },
-    height: {
-      kind: 'integer',
-      default: 768,
-      min: 256,
-      max: 2048,
-      step: 64,
-      label: 'Height',
-      target: { node: '5', input: 'height' },
-    },
     checkpoint: {
       kind: 'string',
-      default: 'realisticVisionV60B1_v51HyperVAE.safetensors',
+      default: 'v1-5-pruned-emaonly-fp16.safetensors',
       label: 'Base checkpoint',
       target: { node: '2', input: 'ckpt_name' },
     },
