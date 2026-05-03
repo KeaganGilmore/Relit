@@ -1,0 +1,88 @@
+{
+  "1": {
+    "class_type": "LoadImage",
+    "inputs": { "image": "__INPUT__" },
+    "_meta": { "title": "Load input" }
+  },
+  "2": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": { "ckpt_name": "realisticVisionV60B1_v51HyperVAE.safetensors" },
+    "_meta": { "title": "Base SD1.5 checkpoint" }
+  },
+  "3": {
+    "class_type": "LoadAndApplyICLightUnet",
+    "inputs": {
+      "model": ["2", 0],
+      "model_path": "iclight_sd15_fc.safetensors"
+    },
+    "_meta": { "title": "Apply IC-Light unet" }
+  },
+  "4": {
+    "class_type": "ICLightConditioning",
+    "inputs": {
+      "positive": ["6", 0],
+      "negative": ["7", 0],
+      "vae": ["2", 2],
+      "foreground": ["1", 0],
+      "multiplier": 0.182
+    },
+    "_meta": { "title": "IC-Light conditioning" }
+  },
+  "5": {
+    "class_type": "EmptyLatentImage",
+    "inputs": { "width": 768, "height": 768, "batch_size": 1 }
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": ["2", 1],
+      "text": "soft cinematic lighting, photo, high detail"
+    },
+    "_meta": { "title": "Positive prompt" }
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": ["2", 1],
+      "text": "lowres, blurry, watermark, jpeg artifacts"
+    },
+    "_meta": { "title": "Negative prompt" }
+  },
+  "8": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["3", 0],
+      "positive": ["4", 0],
+      "negative": ["4", 1],
+      "latent_image": ["4", 2],
+      "seed": 0,
+      "steps": 25,
+      "cfg": 2.0,
+      "sampler_name": "dpmpp_2m_sde_gpu",
+      "scheduler": "karras",
+      "denoise": 1.0
+    },
+    "_meta": { "title": "Sampler" }
+  },
+  "9": {
+    "class_type": "VAEDecode",
+    "inputs": { "samples": ["8", 0], "vae": ["2", 2] },
+    "_meta": { "title": "Decode" }
+  },
+  "10": {
+    "class_type": "DetailTransfer",
+    "inputs": {
+      "target": ["9", 0],
+      "source": ["1", 0],
+      "mode": "add",
+      "blur_sigma": 1.0,
+      "blend_factor": 1.0
+    },
+    "_meta": { "title": "Detail transfer (preserve subject)" }
+  },
+  "11": {
+    "class_type": "SaveImage",
+    "inputs": { "images": ["10", 0], "filename_prefix": "__OUTPUT__" },
+    "_meta": { "title": "Save output" }
+  }
+}

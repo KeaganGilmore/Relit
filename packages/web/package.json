@@ -9,7 +9,8 @@
     "build": "vite build",
     "dev": "vite",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
+    "install-to-comfyui": "node scripts/install-to-comfyui.mjs"
   },
   "dependencies": {
     "@relit/core": "workspace:*"

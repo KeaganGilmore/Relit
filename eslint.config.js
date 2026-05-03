@@ -28,6 +28,8 @@ export default [
     },
     rules: {
       ...tseslint.configs.recommended.rules,
+      // TS already enforces this; eslint's no-undef doesn't know DOM/Node lib types.
+      'no-undef': 'off',
       '@typescript-eslint/no-unused-vars': [
         'error',
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
@@ -37,7 +39,13 @@ export default [
     },
   },
   {
-    files: ['packages/cli/**/*.ts', 'eslint.config.js', '**/*.config.ts', '**/*.config.js'],
+    files: [
+      'packages/cli/**/*.ts',
+      'packages/web/scripts/**/*.{js,mjs}',
+      'eslint.config.js',
+      '**/*.config.ts',
+      '**/*.config.js',
+    ],
     languageOptions: {
       globals: { ...globals.node },
     },

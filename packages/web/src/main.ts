@@ -1,6 +1,4 @@
-import { VERSION } from '@relit/core';
+import './styles.css';
+import { start } from './app.js';
 
-const app = document.getElementById('app');
-if (app) {
-  app.textContent = `relit web — core v${VERSION} — Phase 0 scaffolding`;
-}
+start();
